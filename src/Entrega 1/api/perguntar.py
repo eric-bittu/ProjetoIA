@@ -71,8 +71,8 @@ def vectorize(text, dim=VECTOR_DIM):
 
 
 def processar_pergunta(pergunta):
-    supabase_url = os.environ.get("SUPABASE_URL")
-    supabase_key = os.environ.get("SUPABASE_SERVICE_KEY")
+    supabase_url = os.environ.get("SUPABASE_URL", "")
+    supabase_key = os.environ.get("SUPABASE_SERVICE_KEY", "")
 
     if not supabase_url or not supabase_key:
         return {
@@ -128,8 +128,14 @@ def processar_pergunta(pergunta):
         }
 
     except Exception as e:
+        diag_url = repr(supabase_url)
+        diag_key_len = len(supabase_key)
+        diag_key_edges = f"{supabase_key[:6]}...{supabase_key[-6:]}" if diag_key_len > 12 else "curta demais"
         return {
-            "resposta": f"[DEBUG] {type(e).__name__}: {str(e)}",
+            "resposta": (
+                f"[DEBUG] {type(e).__name__}: {str(e)} | "
+                f"url={diag_url} | key_len={diag_key_len} | key_edges={diag_key_edges}"
+            ),
             "confianca": 0.0,
             "abstencao": True,
             "evidencias": [],
