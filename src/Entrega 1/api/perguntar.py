@@ -1,9 +1,13 @@
 """
-API do Agente para o Estudante (ASA/FECAP) - versão sem framework
---------------------------------------------------------------------
-Cada arquivo dentro de /api vira automaticamente uma rota no Vercel:
-este arquivo (api/perguntar.py) fica disponível em /api/perguntar
-sem precisar de nenhum vercel.json ou configuração extra.
+API do Agente para o Estudante (ASA/FECAP) - v2 com TF-IDF real
+------------------------------------------------------------------
+Cada arquivo dentro de /api vira uma rota automaticamente no Vercel:
+este arquivo fica disponível em /api/perguntar sem precisar de vercel.json.
+
+Usa a MESMA lógica de vetorização do gerar_embeddings.py, incluindo a
+tabela de IDF (idf_table.json) calculada a partir de todo o corpus —
+por isso os dois precisam ficar sincronizados (rode gerar_embeddings.py
+de novo sempre que atualizar os documentos, e comite o idf_table.json).
 
 Variáveis de ambiente necessárias (Vercel > Project Settings > Environment Variables):
     SUPABASE_URL
@@ -13,32 +17,65 @@ Variáveis de ambiente necessárias (Vercel > Project Settings > Environment Var
 import os
 import re
 import json
+import math
 import hashlib
 import unicodedata
 from http.server import BaseHTTPRequestHandler
 from supabase import create_client
 
 VECTOR_DIM = 384
-CONFIDENCE_THRESHOLD = 0.20
+CONFIDENCE_THRESHOLD = 0.15
 
 STOPWORDS = {
     "a","o","as","os","de","da","do","das","dos","que","e","é","para","com",
     "um","uma","no","na","nos","nas","em","por","se","meu","minha","tenho",
     "preciso","como","qual","quais","sobre","ao","aos","esse","essa","isso",
-    "eu","voce","você","tem","ter","vou","vai","sera","será"
+    "eu","voce","você","tem","ter","vou","vai","sera","será","ser","sao","são",
+    "ou","mais","muito","ja","já","ainda","depois","antes","entao","então"
 }
 
 SYNONYMS = {
-    "suspender": "trancar", "pausar": "trancar", "parar": "trancar",
-    "cancelar": "trancar", "trancamento": "trancar",
-    "boleto": "financeiro", "mensalidade": "financeiro", "pagamento": "financeiro",
-    "divida": "financeiro",
-    "comprovante": "declaracao", "atestado": "declaracao", "declaracoes": "declaracao",
-    "fies": "financiamento", "prouni": "financiamento", "bolsas": "financiamento",
-    "bolsa": "financiamento",
-    "reprovado": "desempenho", "reprovacao": "desempenho", "reprovar": "desempenho",
-    "nota": "desempenho", "notas": "desempenho", "falta": "desempenho",
-    "faltas": "desempenho", "frequencia": "desempenho",
+    "suspender":"trancar","suspendo":"trancar","suspensao":"trancar","suspensão":"trancar",
+    "pausar":"trancar","pauso":"trancar","parar":"trancar","paro":"trancar",
+    "cancelar":"cancelamento","cancelo":"cancelamento","cancelado":"cancelamento",
+    "trancamento":"trancar","tranco":"trancar","trancando":"trancar","trancado":"trancar",
+    "desistir":"cancelamento","desistencia":"cancelamento","desistência":"cancelamento",
+    "boleto":"financeiro","boletos":"financeiro","mensalidade":"financeiro","mensalidades":"financeiro",
+    "pagamento":"financeiro","pagar":"financeiro","divida":"financeiro","dívida":"financeiro",
+    "desconto":"financeiro","valor":"financeiro","preco":"financeiro","preço":"financeiro",
+    "auxilio":"auxiliofinanceiro","auxílio":"auxiliofinanceiro","emergencial":"auxiliofinanceiro",
+    "vulnerabilidade":"auxiliofinanceiro",
+    "comprovante":"declaracao","comprovantes":"declaracao","atestado":"declaracao",
+    "declaracoes":"declaracao","declaração":"declaracao","declaraçao":"declaracao",
+    "certidao":"declaracao","certidão":"declaracao",
+    "fies":"financiamento","prouni":"financiamento","bolsas":"financiamento","bolsa":"financiamento",
+    "bolsista":"financiamento","financiado":"financiamento",
+    "reprovado":"desempenho","reprovacao":"desempenho","reprovação":"desempenho","reprovar":"desempenho",
+    "reprovando":"desempenho","nota":"desempenho","notas":"desempenho","media":"desempenho","média":"desempenho",
+    "falta":"desempenho","faltas":"desempenho","faltei":"desempenho","frequencia":"desempenho","frequência":"desempenho",
+    "presenca":"desempenho","presença":"desempenho",
+    "prova":"avaliacao","provas":"avaliacao","avaliacao":"avaliacao","avaliação":"avaliacao",
+    "exame":"avaliacao","teste":"avaliacao",
+    "segundachamada":"segundachamada","2achamada":"segundachamada",
+    "reposicao":"segundachamada","reposição":"segundachamada","perdi":"segundachamada",
+    "revisao":"revisaonota","revisão":"revisaonota","recurso":"revisaonota","contestar":"revisaonota",
+    "errada":"revisaonota","corrigir":"revisaonota",
+    "dispensa":"aproveitamento","dispensar":"aproveitamento","equivalencia":"aproveitamento",
+    "equivalência":"aproveitamento","aproveitar":"aproveitamento",
+    "trocar":"transferencia","troca":"transferencia","mudar":"transferencia","mudanca":"transferencia",
+    "mudança":"transferencia","transferir":"transferencia","transferência":"transferencia",
+    "periodo":"turno","período":"turno","horario":"turno","horário":"turno",
+    "estagio":"estagio","estágio":"estagio","estagiar":"estagio","estagiario":"estagio",
+    "tcc":"tcc","monografia":"tcc","orientador":"tcc","orientacao":"tcc","orientação":"tcc",
+    "livro":"biblioteca","livros":"biblioteca","emprestimo":"biblioteca","empréstimo":"biblioteca",
+    "emprestar":"biblioteca","devolver":"biblioteca","devolucao":"biblioteca","devolução":"biblioteca",
+    "carreira":"carreira","emprego":"carreira","vaga":"carreira","vagas":"carreira",
+    "curriculo":"carreira","currículo":"carreira","entrevista":"carreira",
+    "medico":"atestadomedico","médico":"atestadomedico","saude":"atestadomedico","saúde":"atestadomedico",
+    "doente":"atestadomedico","doenca":"atestadomedico","doença":"atestadomedico",
+    "diploma":"certificado","certificado":"certificado","formatura":"certificado",
+    "colacao":"certificado","colação":"certificado","formar":"certificado",
+    "intercambio":"intercambio","intercâmbio":"intercambio","exterior":"intercambio","fora":"intercambio",
 }
 
 
@@ -60,10 +97,34 @@ def hash_token(token, dim=VECTOR_DIM):
     return int(digest, 16) % dim
 
 
+def carregar_idf_table():
+    """Carrega a tabela de IDF gerada pelo gerar_embeddings.py. Se não achar
+    o arquivo (ex: esqueceram de commitar), cai para peso uniforme (1.0),
+    que ainda funciona, só que sem o benefício do TF-IDF."""
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    caminho = os.path.join(base_dir, "idf_table.json")
+    try:
+        with open(caminho, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return [1.0] * VECTOR_DIM
+
+
+IDF_TABLE = carregar_idf_table()
+
+
 def vectorize(text, dim=VECTOR_DIM):
+    tokens = tokenize(text)
+    counts = {}
+    for t in tokens:
+        counts[t] = counts.get(t, 0) + 1
+
     vec = [0.0] * dim
-    for t in tokenize(text):
-        vec[hash_token(t, dim)] += 1.0
+    for t, c in counts.items():
+        idx = hash_token(t, dim)
+        tf = 1.0 + math.log(c)
+        vec[idx] += tf * IDF_TABLE[idx]
+
     norm = sum(v * v for v in vec) ** 0.5
     if norm > 0:
         vec = [v / norm for v in vec]
@@ -128,14 +189,8 @@ def processar_pergunta(pergunta):
         }
 
     except Exception as e:
-        diag_url = repr(supabase_url)
-        diag_key_len = len(supabase_key)
-        diag_key_edges = f"{supabase_key[:6]}...{supabase_key[-6:]}" if diag_key_len > 12 else "curta demais"
         return {
-            "resposta": (
-                f"[DEBUG] {type(e).__name__}: {str(e)} | "
-                f"url={diag_url} | key_len={diag_key_len} | key_edges={diag_key_edges}"
-            ),
+            "resposta": f"[DEBUG] {type(e).__name__}: {str(e)}",
             "confianca": 0.0,
             "abstencao": True,
             "evidencias": [],
